@@ -1,0 +1,113 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <CL/cl.h>
+
+// OpenCL kernel for prefix sum
+const char *kernel_source = 
+    "__kernel void prefix_sum_step(__global int *input, \n"
+    "                              __global int *output, \n"
+    "                              const int step, \n"
+    "                              const int N) {\n"
+    "   int id = get_global_id(0);\n"
+    "   if (id >= step && id < N) {\n"
+    "       output[id] = input[id] + input[id - step];\n"
+    "   } else if (id < N) {\n"
+    "       output[id] = input[id];\n"
+    "   }\n"
+    "}\n";
+
+void check_error(cl_int err, const char *message) {
+    if (err != CL_SUCCESS) {
+        printf("Error: %s (Code %d)\n", message, err);
+        exit(1);
+    }
+}
+
+int main() {
+    // Input array size
+    const int N = 16; // Adjust as needed
+    int input[N], output[N];
+
+    // Initialize the input array (example: 1, 2, 3, ..., N)
+    for (int i = 0; i < N; i++) {
+        input[i] = i + 1;
+    }
+
+    // OpenCL setup
+    cl_int err;
+    cl_platform_id platform;
+    cl_device_id device;
+    cl_context context;
+    cl_command_queue queue;
+    cl_program program;
+    cl_kernel kernel;
+
+    // Get platform and device
+    clGetPlatformIDs(1, &platform, NULL);
+    clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, NULL);
+
+    // Create context and queue
+    context = clCreateContext(NULL, 1, &device, NULL, NULL, &err);
+    check_error(err, "Failed to create context");
+    queue = clCreateCommandQueue(context, device, 0, &err);
+    check_error(err, "Failed to create queue");
+
+    // Allocate memory
+    cl_mem buf_input = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(input), input, &err);
+    check_error(err, "Failed to create input buffer");
+    cl_mem buf_output = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(output), NULL, &err);
+    check_error(err, "Failed to create output buffer");
+
+    // Compile kernel
+    program = clCreateProgramWithSource(context, 1, &kernel_source, NULL, &err);
+    check_error(err, "Failed to create program");
+    clBuildProgram(program, 1, &device, NULL, NULL, NULL);
+    kernel = clCreateKernel(program, "prefix_sum_step", &err);
+    check_error(err, "Failed to create kernel");
+
+    // Perform prefix sum using multiple kernel executions
+    for (int step = 1; step < N; step *= 2) {
+        // Set kernel arguments
+        clSetKernelArg(kernel, 0, sizeof(cl_mem), &buf_input);
+        clSetKernelArg(kernel, 1, sizeof(cl_mem), &buf_output);
+        clSetKernelArg(kernel, 2, sizeof(int), &step);
+        clSetKernelArg(kernel, 3, sizeof(int), &N);
+
+        // Set work sizes
+        size_t global_size = N;
+
+        // Execute kernel
+        clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &global_size, NULL, 0, NULL, NULL);
+
+        // Swap input and output buffers for the next step
+        cl_mem temp = buf_input;
+        buf_input = buf_output;
+        buf_output = temp;
+    }
+
+    // Read back results
+    clEnqueueReadBuffer(queue, buf_input, CL_TRUE, 0, sizeof(output), output, 0, NULL, NULL);
+
+    // Print result
+    printf("Input Array: ");
+    for (int i = 0; i < N; i++) {
+        printf("%d ", input[i]);
+    }
+    printf("\n");
+
+    printf("Prefix Sum: ");
+    for (int i = 0; i < N; i++) {
+        printf("%d ", output[i]);
+    }
+    printf("\n");
+
+    // Cleanup
+    clReleaseMemObject(buf_input);
+    clReleaseMemObject(buf_output);
+    clReleaseKernel(kernel);
+    clReleaseProgram(program);
+    clReleaseCommandQueue(queue);
+    clReleaseContext(context);
+
+    return 0;
+}
