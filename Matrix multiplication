@@ -1,0 +1,97 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <CL/cl.h>
+
+// OpenCL kernel for matrix multiplication
+const char *kernel_source = 
+    "__kernel void matrix_mult(__global const float *A, \n"
+    "                          __global const float *B, \n"
+    "                          __global float *C, \n"
+    "                          const int M, const int K, const int N) {\n"
+    "   int row = get_global_id(0);\n"
+    "   int col = get_global_id(1);\n"
+    "   float sum = 0.0;\n"
+    "   for (int k = 0; k < K; k++) {\n"
+    "       sum += A[row * K + k] * B[k * N + col];\n"
+    "   }\n"
+    "   C[row * N + col] = sum;\n"
+    "}\n";
+
+void check_error(cl_int err, const char *message) {
+    if (err != CL_SUCCESS) {
+        printf("Error: %s (Code %d)\n", message, err);
+        exit(1);
+    }
+}
+
+int main() {
+    // Matrix dimensions
+    const int M = 2, K = 2, N = 2; // Change sizes as needed
+    float A[M * K] = {1, 2, 3, 4};
+    float B[K * N] = {5, 6, 7, 8};
+    float C[M * N] = {0};
+
+    // Set up OpenCL
+    cl_int err;
+    cl_platform_id platform;
+    cl_device_id device;
+    cl_context context;
+    cl_command_queue queue;
+    cl_program program;
+    cl_kernel kernel;
+
+    // Get platform and device
+    clGetPlatformIDs(1, &platform, NULL);
+    clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, NULL);
+
+    // Create context and queue
+    context = clCreateContext(NULL, 1, &device, NULL, NULL, &err);
+    check_error(err, "Failed to create context");
+    queue = clCreateCommandQueue(context, device, 0, &err);
+    check_error(err, "Failed to create queue");
+
+    // Create buffers
+    cl_mem bufA = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(A), A, &err);
+    cl_mem bufB = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(B), B, &err);
+    cl_mem bufC = clCreateBuffer(context, CL_MEM_WRITE_ONLY, sizeof(C), NULL, &err);
+
+    // Compile kernel
+    program = clCreateProgramWithSource(context, 1, &kernel_source, NULL, &err);
+    clBuildProgram(program, 1, &device, NULL, NULL, NULL);
+    kernel = clCreateKernel(program, "matrix_mult", &err);
+
+    // Set kernel arguments
+    clSetKernelArg(kernel, 0, sizeof(cl_mem), &bufA);
+    clSetKernelArg(kernel, 1, sizeof(cl_mem), &bufB);
+    clSetKernelArg(kernel, 2, sizeof(cl_mem), &bufC);
+    clSetKernelArg(kernel, 3, sizeof(int), &M);
+    clSetKernelArg(kernel, 4, sizeof(int), &K);
+    clSetKernelArg(kernel, 5, sizeof(int), &N);
+
+    // Set work size and run kernel
+    size_t global_size[] = {M, N};
+    clEnqueueNDRangeKernel(queue, kernel, 2, NULL, global_size, NULL, 0, NULL, NULL);
+
+    // Read back results
+    clEnqueueReadBuffer(queue, bufC, CL_TRUE, 0, sizeof(C), C, 0, NULL, NULL);
+
+    // Display results
+    printf("Result Matrix C:\n");
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            printf("%6.2f ", C[i * N + j]);
+        }
+        printf("\n");
+    }
+
+    // Cleanup
+    clReleaseMemObject(bufA);
+    clReleaseMemObject(bufB);
+    clReleaseMemObject(bufC);
+    clReleaseKernel(kernel);
+    clReleaseProgram(program);
+    clReleaseCommandQueue(queue);
+    clReleaseContext(context);
+
+    return 0;
+}
