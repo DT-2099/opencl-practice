@@ -1,0 +1,118 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <CL/cl.h>
+
+// OpenCL kernel for array sum reduction
+const char *kernel_source = 
+    "__kernel void array_sum(__global const float *input, \n"
+    "                        __global float *output, \n"
+    "                        __local float *local_sum, \n"
+    "                        const int N) {\n"
+    "   int global_id = get_global_id(0);\n"
+    "   int local_id = get_local_id(0);\n"
+    "   int group_size = get_local_size(0);\n"
+    "\n"
+    "   // Load data into local memory\n"
+    "   local_sum[local_id] = (global_id < N) ? input[global_id] : 0.0f;\n"
+    "   barrier(CLK_LOCAL_MEM_FENCE);\n"
+    "\n"
+    "   // Perform reduction within the work group\n"
+    "   for (int stride = group_size / 2; stride > 0; stride /= 2) {\n"
+    "       if (local_id < stride) {\n"
+    "           local_sum[local_id] += local_sum[local_id + stride];\n"
+    "       }\n"
+    "       barrier(CLK_LOCAL_MEM_FENCE);\n"
+    "   }\n"
+    "\n"
+    "   // Write the result of this work group to the output array\n"
+    "   if (local_id == 0) {\n"
+    "       output[get_group_id(0)] = local_sum[0];\n"
+    "   }\n"
+    "}\n";
+
+void check_error(cl_int err, const char *message) {
+    if (err != CL_SUCCESS) {
+        printf("Error: %s (Code %d)\n", message, err);
+        exit(1);
+    }
+}
+
+int main() {
+    // Array size
+    const int N = 1024; // Adjust as needed
+    float input[N], final_sum = 0.0f;
+
+    // Initialize the array
+    for (int i = 0; i < N; i++) {
+        input[i] = i + 1; // Example: 1, 2, 3, ..., N
+    }
+
+    // OpenCL setup
+    cl_int err;
+    cl_platform_id platform;
+    cl_device_id device;
+    cl_context context;
+    cl_command_queue queue;
+    cl_program program;
+    cl_kernel kernel;
+
+    // Get platform and device
+    clGetPlatformIDs(1, &platform, NULL);
+    clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, NULL);
+
+    // Create context and queue
+    context = clCreateContext(NULL, 1, &device, NULL, NULL, &err);
+    check_error(err, "Failed to create context");
+    queue = clCreateCommandQueue(context, device, 0, &err);
+    check_error(err, "Failed to create queue");
+
+    // Allocate memory
+    cl_mem buf_input = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(input), input, &err);
+    check_error(err, "Failed to create input buffer");
+
+    int num_groups = N / 256; // Assuming a local work size of 256
+    cl_mem buf_output = clCreateBuffer(context, CL_MEM_WRITE_ONLY, sizeof(float) * num_groups, NULL, &err);
+    check_error(err, "Failed to create output buffer");
+
+    // Compile kernel
+    program = clCreateProgramWithSource(context, 1, &kernel_source, NULL, &err);
+    check_error(err, "Failed to create program");
+    clBuildProgram(program, 1, &device, NULL, NULL, NULL);
+    kernel = clCreateKernel(program, "array_sum", &err);
+    check_error(err, "Failed to create kernel");
+
+    // Set kernel arguments
+    clSetKernelArg(kernel, 0, sizeof(cl_mem), &buf_input);
+    clSetKernelArg(kernel, 1, sizeof(cl_mem), &buf_output);
+    clSetKernelArg(kernel, 2, sizeof(float) * 256, NULL); // Local memory
+    clSetKernelArg(kernel, 3, sizeof(int), &N);
+
+    // Set work sizes
+    size_t global_size = (N + 255) / 256 * 256; // Round up to the nearest multiple of 256
+    size_t local_size = 256;
+
+    // Execute kernel
+    clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &global_size, &local_size, 0, NULL, NULL);
+
+    // Read partial results
+    float partial_sums[num_groups];
+    clEnqueueReadBuffer(queue, buf_output, CL_TRUE, 0, sizeof(float) * num_groups, partial_sums, 0, NULL, NULL);
+
+    // Final sum reduction on the host
+    for (int i = 0; i < num_groups; i++) {
+        final_sum += partial_sums[i];
+    }
+
+    // Print result
+    printf("Sum of array elements: %.2f\n", final_sum);
+
+    // Cleanup
+    clReleaseMemObject(buf_input);
+    clReleaseMemObject(buf_output);
+    clReleaseKernel(kernel);
+    clReleaseProgram(program);
+    clReleaseCommandQueue(queue);
+    clReleaseContext(context);
+
+    return 0;
+}
