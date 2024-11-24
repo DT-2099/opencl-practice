@@ -1,0 +1,110 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <CL/cl.h>
+
+// OpenCL kernel for vector addition
+const char *kernel_source = 
+    "__kernel void vector_add(__global const float *A, __global const float *B, __global float *C) {\n"
+    "   int id = get_global_id(0);\n"
+    "   C[id] = A[id] + B[id];\n"
+    "}\n";
+
+void check_error(cl_int err, const char *message) {
+    if (err != CL_SUCCESS) {
+        fprintf(stderr, "Error: %s (code %d)\n", message, err);
+        exit(EXIT_FAILURE);
+    }
+}
+
+int main() {
+    const int N = 1024;
+    float *A = (float *)malloc(N * sizeof(float));
+    float *B = (float *)malloc(N * sizeof(float));
+    float *C = (float *)malloc(N * sizeof(float));
+
+    // Initialize input vectors
+    for (int i = 0; i < N; i++) {
+        A[i] = i;
+        B[i] = N - i;
+    }
+
+    // OpenCL setup
+    cl_int err;
+    cl_uint num_platforms, num_devices;
+    cl_platform_id platform;
+    cl_device_id device;
+    cl_context context;
+    cl_command_queue queue;
+    cl_program program;
+    cl_kernel kernel;
+
+    // Get platform and device
+    err = clGetPlatformIDs(1, &platform, &num_platforms);
+    check_error(err, "Failed to find a platform");
+    err = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, &num_devices);
+    check_error(err, "Failed to find a device");
+
+    // Create context and command queue
+    context = clCreateContext(NULL, 1, &device, NULL, NULL, &err);
+    check_error(err, "Failed to create a context");
+    queue = clCreateCommandQueue(context, device, 0, &err);
+    check_error(err, "Failed to create a command queue");
+
+    // Create buffers
+    cl_mem buffer_A = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, N * sizeof(float), A, &err);
+    check_error(err, "Failed to create buffer A");
+    cl_mem buffer_B = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, N * sizeof(float), B, &err);
+    check_error(err, "Failed to create buffer B");
+    cl_mem buffer_C = clCreateBuffer(context, CL_MEM_WRITE_ONLY, N * sizeof(float), NULL, &err);
+    check_error(err, "Failed to create buffer C");
+
+    // Build program and create kernel
+    program = clCreateProgramWithSource(context, 1, &kernel_source, NULL, &err);
+    check_error(err, "Failed to create program");
+    err = clBuildProgram(program, 1, &device, NULL, NULL, NULL);
+    if (err != CL_SUCCESS) {
+        char build_log[4096];
+        clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, sizeof(build_log), build_log, NULL);
+        fprintf(stderr, "Build error:\n%s\n", build_log);
+        exit(EXIT_FAILURE);
+    }
+    kernel = clCreateKernel(program, "vector_add", &err);
+    check_error(err, "Failed to create kernel");
+
+    // Set kernel arguments
+    err = clSetKernelArg(kernel, 0, sizeof(cl_mem), &buffer_A);
+    check_error(err, "Failed to set kernel argument 0");
+    err = clSetKernelArg(kernel, 1, sizeof(cl_mem), &buffer_B);
+    check_error(err, "Failed to set kernel argument 1");
+    err = clSetKernelArg(kernel, 2, sizeof(cl_mem), &buffer_C);
+    check_error(err, "Failed to set kernel argument 2");
+
+    // Execute kernel
+    size_t global_work_size = N;
+    err = clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &global_work_size, NULL, 0, NULL, NULL);
+    check_error(err, "Failed to enqueue kernel");
+
+    // Read back result
+    err = clEnqueueReadBuffer(queue, buffer_C, CL_TRUE, 0, N * sizeof(float), C, 0, NULL, NULL);
+    check_error(err, "Failed to read buffer C");
+
+    // Print a sample of results
+    printf("Sample Results:\n");
+    for (int i = 0; i < 10; i++) {
+        printf("C[%d] = %f\n", i, C[i]);
+    }
+
+    // Clean up
+    clReleaseMemObject(buffer_A);
+    clReleaseMemObject(buffer_B);
+    clReleaseMemObject(buffer_C);
+    clReleaseKernel(kernel);
+    clReleaseProgram(program);
+    clReleaseCommandQueue(queue);
+    clReleaseContext(context);
+    free(A);
+    free(B);
+    free(C);
+
+    return 0;
+}
